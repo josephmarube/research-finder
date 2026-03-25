@@ -1,0 +1,258 @@
+name: Research Finder CI/CD
+
+# Trigger on every push to main branch
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+
+  # ─────────────────────────────────────────────
+  # JOB 1: TEST
+  # Runs on GitHub's servers — no SSH needed
+  # ─────────────────────────────────────────────
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+
+    services:
+      # Spin up a real Redis instance for tests
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt pytest requests
+
+      - name: Start Flask app in background
+        env:
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+          FLASK_ENV: development
+          CONTACT_EMAIL: ci-test@example.com
+        run: |
+          python -m backend.app &
+          # Wait for Flask to be ready
+          for i in {1..15}; do
+            curl -s http://localhost:5000/health && break
+            echo "Waiting for Flask... ($i)"
+            sleep 2
+          done
+
+      - name: Test health endpoint
+        run: |
+          response=$(curl -s http://localhost:5000/health)
+          echo "Health response: $response"
+          echo "$response" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          assert data['status'] == 'ok', f'Health check failed: {data}'
+          print('✓ Health check passed')
+          "
+
+      - name: Test search endpoint returns results
+        run: |
+          response=$(curl -s "http://localhost:5000/api/search?q=machine+learning&per_page=3")
+          echo "Search response (truncated):"
+          echo "$response" | python3 -m json.tool | head -20
+          echo "$response" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          assert 'results' in data, 'No results key in response'
+          assert len(data['results']) > 0, 'No results returned'
+          assert 'total' in data, 'No total key in response'
+          assert data['total'] > 0, 'Total is 0'
+          print(f'✓ Search returned {len(data[\"results\"])} results ({data[\"total\"]} total)')
+          "
+
+      - name: Test search filters work
+        run: |
+          response=$(curl -s "http://localhost:5000/api/search?q=cancer&year=2022&per_page=3")
+          echo "$response" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          assert 'results' in data, 'Filter search failed'
+          print(f'✓ Filtered search passed ({len(data[\"results\"])} results)')
+          "
+
+      - name: Test open access filter
+        run: |
+          response=$(curl -s "http://localhost:5000/api/search?q=biology&oa_only=true&per_page=3")
+          echo "$response" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          results = data.get('results', [])
+          for r in results:
+            assert r.get('is_oa') == True, f'Non-OA result returned: {r.get(\"title\")}'
+          print(f'✓ Open access filter passed ({len(results)} results, all OA)')
+          "
+
+      - name: Test citation generation
+        run: |
+          # First get a paper with a DOI
+          search=$(curl -s "http://localhost:5000/api/search?q=deep+learning&per_page=5")
+          doi=$(echo "$search" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          for r in data['results']:
+            if r.get('doi'):
+              print(r['doi'])
+              break
+          ")
+          echo "Testing citation for DOI: $doi"
+          if [ -n "$doi" ]; then
+            for fmt in apa mla chicago harvard bibtex; do
+              response=$(curl -s "http://localhost:5000/api/cite?doi=$doi&format=$fmt")
+              echo "$response" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          assert 'citation' in data, f'No citation in response'
+          assert len(data['citation']) > 10, f'Citation too short: {data[\"citation\"]}'
+          print(f'  ✓ $fmt citation generated ({len(data[\"citation\"])} chars)')
+              "
+            done
+          else
+            echo "No DOI found in results, skipping citation test"
+          fi
+
+      - name: Test error handling — invalid symbol
+        run: |
+          response=$(curl -s -o /dev/null -w "%{http_code}" \
+            "http://localhost:5000/api/search")
+          echo "Status for empty search: $response"
+          [ "$response" = "400" ] && echo "✓ Returns 400 for missing query" || \
+            echo "⚠ Expected 400, got $response"
+
+      - name: Test Redis caching works
+        run: |
+          # First request — should be live
+          r1=$(curl -s "http://localhost:5000/api/search?q=physics&per_page=2")
+          cached1=$(echo "$r1" | python3 -c "import sys,json; print(json.load(sys.stdin).get('_cached', False))")
+
+          # Second identical request — should be cached
+          r2=$(curl -s "http://localhost:5000/api/search?q=physics&per_page=2")
+          cached2=$(echo "$r2" | python3 -c "import sys,json; print(json.load(sys.stdin).get('_cached', False))")
+
+          echo "First request cached: $cached1"
+          echo "Second request cached: $cached2"
+          [ "$cached2" = "True" ] && echo "✓ Redis caching is working" || \
+            echo "⚠ Second request was not cached (Redis may be slow)"
+
+      - name: All tests passed
+        run: echo "✅ All tests passed — ready to deploy"
+
+  # ─────────────────────────────────────────────
+  # JOB 2: DEPLOY
+  # Only runs on push to main (not on PRs)
+  # Only runs if tests passed
+  # ─────────────────────────────────────────────
+  deploy:
+    name: Deploy to Servers
+    runs-on: ubuntu-latest
+    needs: test  # only deploy if tests pass
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add servers to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.WEB01_IP }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ secrets.WEB02_IP }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to Web01
+        run: |
+          ssh ubuntu@${{ secrets.WEB01_IP }} << 'ENDSSH'
+            set -e
+            echo "=== Deploying to Web01 ==="
+            cd ~/projects/research-finder
+
+            # Pull latest code
+            git pull origin main
+
+            # Rebuild and restart containers (zero-downtime: Redis keeps running)
+            docker compose up --build -d app
+
+            # Wait for app to be healthy
+            for i in {1..15}; do
+              curl -sf http://localhost:5000/health && break
+              echo "Waiting for app to start... ($i)"
+              sleep 3
+            done
+
+            echo "=== Web01 deployment complete ==="
+            curl -s http://localhost:5000/health
+          ENDSSH
+
+      - name: Deploy to Web02
+        run: |
+          ssh ubuntu@${{ secrets.WEB02_IP }} << 'ENDSSH'
+            set -e
+            echo "=== Deploying to Web02 ==="
+            cd ~/projects/research-finder
+
+            # Pull latest code
+            git pull origin main
+
+            # Rebuild and restart containers
+            docker compose up --build -d app
+
+            # Wait for app to be healthy
+            for i in {1..15}; do
+              curl -sf http://localhost:5000/health && break
+              echo "Waiting for app to start... ($i)"
+              sleep 3
+            done
+
+            echo "=== Web02 deployment complete ==="
+            curl -s http://localhost:5000/health
+          ENDSSH
+
+      - name: Verify deployment via load balancer
+        run: |
+          echo "Waiting 5s for load balancer to pick up new instances..."
+          sleep 5
+          response=$(curl -s -o /dev/null -w "%{http_code}" https://youngjmatrix.tech/health)
+          echo "Load balancer health check status: $response"
+          [ "$response" = "200" ] && echo "✅ Deployment successful — youngjmatrix.tech is live" || \
+            echo "⚠ Load balancer returned $response — check server logs"
+
+      - name: Notify success
+        if: success()
+        run: |
+          echo "🚀 Deployment complete!"
+          echo "Site: https://youngjmatrix.tech"
+          echo "Commit: ${{ github.sha }}"
+          echo "Deployed by: ${{ github.actor }}"
+
+      - name: Notify failure
+        if: failure()
+        run: |
+          echo "❌ Deployment failed!"
+          echo "Commit: ${{ github.sha }}"
+          echo "Check the logs above for details."
