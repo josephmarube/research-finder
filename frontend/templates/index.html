@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Research Finder</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,400;0,600;0,700;1,300;1,400&family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/main.css" />
+</head>
+<body>
+
+  <!-- HEADER -->
+  <header class="header">
+    <div class="header-inner">
+      <div class="logo">
+        <span class="logo-icon">⟁</span>
+        <div class="logo-text">
+          <span class="logo-main">Research Finder</span>
+          <span class="logo-sub">Powered by OpenAlex &amp; CrossRef</span>
+        </div>
+      </div>
+      <nav class="tab-nav">
+        <button class="tab-btn active" data-tab="search">Search</button>
+        <button class="tab-btn" data-tab="library">
+          My Library
+          <span class="library-count" id="libraryCount">0</span>
+        </button>
+      </nav>
+      <div class="header-right">
+        <span class="source-badge" id="sourceBadge"></span>
+        <span class="cache-badge" id="cacheBadge"></span>
+      </div>
+    </div>
+  </header>
+
+  <div id="toast" class="toast" aria-live="polite"></div>
+
+  <main class="main">
+
+    <!-- ═══ SEARCH TAB ══════════════════════════════════════ -->
+    <section class="tab-panel active" id="tab-search">
+
+      <!-- Hero search -->
+      <div class="hero">
+        <h1 class="hero-title">Find Academic Papers</h1>
+        <p class="hero-sub">Search millions of scholarly works from OpenAlex and CrossRef</p>
+
+        <div class="search-box">
+          <input
+            id="queryInput"
+            class="search-input"
+            type="text"
+            placeholder="Keywords, title, topic…"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button class="search-btn" id="searchBtn">
+            <span>Search</span>
+          </button>
+        </div>
+
+        <!-- Filters row -->
+        <div class="filters-row">
+          <div class="filter-group">
+            <label class="filter-label">Author</label>
+            <input id="authorInput" class="filter-input" type="text" placeholder="Last name…" />
+          </div>
+          <div class="filter-group">
+            <label class="filter-label">Year</label>
+            <input id="yearInput" class="filter-input" type="number" placeholder="e.g. 2023" min="1900" max="2099" />
+          </div>
+          <div class="filter-group">
+            <label class="filter-label">Type</label>
+            <select id="typeSelect" class="filter-select">
+              <option value="">All types</option>
+              <option value="journal-article">Journal Article</option>
+              <option value="proceedings-article">Conference Paper</option>
+              <option value="book-chapter">Book Chapter</option>
+              <option value="preprint">Preprint</option>
+              <option value="dissertation">Dissertation</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label class="filter-label">Sort by</label>
+            <select id="sortSelect" class="filter-select">
+              <option value="relevance">Relevance</option>
+              <option value="cited_by">Most cited</option>
+              <option value="year">Newest first</option>
+            </select>
+          </div>
+          <label class="oa-toggle">
+            <input type="checkbox" id="oaOnly" />
+            <span class="oa-label">Open Access only</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Results area -->
+      <div class="results-area" id="resultsArea">
+
+        <div class="loading-state hidden" id="searchLoader">
+          <div class="spinner"></div>
+          <span>Searching papers…</span>
+        </div>
+
+        <!-- Results header / pagination info -->
+        <div class="results-meta hidden" id="resultsMeta">
+          <div class="results-count" id="resultsCount"></div>
+          <div class="pagination" id="pagination"></div>
+        </div>
+
+        <!-- Paper cards -->
+        <div class="papers-list" id="papersList"></div>
+
+        <!-- Empty state -->
+        <div class="empty-state" id="emptyState">
+          <div class="empty-icon">⟁</div>
+          <p>Enter a keyword, author name, or topic to begin</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ LIBRARY TAB ═════════════════════════════════════ -->
+    <section class="tab-panel" id="tab-library">
+      <div class="library-header">
+        <div>
+          <h1 class="panel-title">My Library</h1>
+          <p class="panel-sub">Papers saved to your browser. Persists across sessions.</p>
+        </div>
+        <div class="library-actions">
+          <select id="libSortSelect" class="filter-select">
+            <option value="added">Recently added</option>
+            <option value="year">Year</option>
+            <option value="cited_by">Most cited</option>
+            <option value="title">Title A–Z</option>
+          </select>
+          <button class="btn-outline danger" id="clearLibraryBtn">Clear all</button>
+        </div>
+      </div>
+
+      <div class="library-empty hidden" id="libraryEmpty">
+        <div class="empty-icon">📚</div>
+        <p>Your library is empty. Search for papers and click <strong>Save</strong> to add them here.</p>
+      </div>
+
+      <div class="papers-list" id="libraryList"></div>
+    </section>
+
+  </main>
+
+  <!-- ═══ PAPER DETAIL MODAL ══════════════════════════════ -->
+  <div class="modal-overlay hidden" id="modalOverlay">
+    <div class="modal" id="modal" role="dialog" aria-modal="true">
+      <button class="modal-close" id="modalClose" aria-label="Close">✕</button>
+
+      <div class="modal-body" id="modalBody">
+        <div class="modal-loading">
+          <div class="spinner"></div><span>Loading paper details…</span>
+        </div>
+      </div>
+
+      <!-- Citation panel -->
+      <div class="citation-panel" id="citationPanel">
+        <div class="citation-header">
+          <span class="citation-title">Generate Citation</span>
+          <div class="cite-format-btns">
+            <button class="cite-btn active" data-fmt="apa">APA</button>
+            <button class="cite-btn" data-fmt="mla">MLA</button>
+            <button class="cite-btn" data-fmt="chicago">Chicago</button>
+            <button class="cite-btn" data-fmt="harvard">Harvard</button>
+            <button class="cite-btn" data-fmt="bibtex">BibTeX</button>
+          </div>
+        </div>
+        <div class="citation-output" id="citationOutput">Select a format above…</div>
+        <button class="btn-outline" id="copyCiteBtn">Copy citation</button>
+      </div>
+    </div>
+  </div>
+
+  <footer class="footer">
+    <span>Data: <a href="https://openalex.org" target="_blank">OpenAlex</a> ·
+      <a href="https://www.crossref.org" target="_blank">CrossRef</a></span>
+    <span>For academic research use. Always verify citations before submission.</span>
+  </footer>
+
+  <script src="/static/js/main.js"></script>
+</body>
+</html>
