@@ -196,7 +196,17 @@ jobs:
             git pull origin main
 
             # Rebuild and restart containers (zero-downtime: Redis keeps running)
-            sudo docker compose up --build -d app
+            # Ensure we're using the same compose project name every time (optional but helpful)
+            export COMPOSE_PROJECT_NAME=research-finder
+            
+            # Stop and remove old containers to avoid name conflicts
+            docker compose down --remove-orphans
+
+            # Pull/rebuild and start
+            docker compose up --build -d
+
+            # Optional cleanup of unused resources
+            docker image prune -f
 
             # Wait for app to be healthy
             for i in {1..15}; do
@@ -220,7 +230,17 @@ jobs:
             git pull origin main
 
             # Rebuild and restart containers
-            sudo docker compose up --build -d app
+            # Ensure we're using the same compose project name every time (optional but helpful)
+            export COMPOSE_PROJECT_NAME=research-finder
+
+            # Stop and remove old containers to avoid name conflicts
+            docker compose down --remove-orphans
+
+            # Pull/rebuild and start
+            docker compose up --build -d
+
+            # Optional cleanup of unused resources
+            docker image prune -f
 
             # Wait for app to be healthy
             for i in {1..15}; do
