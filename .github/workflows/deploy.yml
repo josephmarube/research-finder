@@ -220,7 +220,7 @@ jobs:
             git pull origin main
 
             # Rebuild and restart containers
-            docker compose up --build -d app
+            sudo docker compose up --build -d app
 
             # Wait for app to be healthy
             for i in {1..15}; do
