@@ -190,7 +190,7 @@ jobs:
           ssh ubuntu@${{ secrets.WEB01_IP }} << 'ENDSSH'
             set -e
             echo "=== Deploying to Web01 ==="
-            cd ~/projects/research-finder
+            cd ~/research-finder
 
             # Pull latest code
             git pull origin main
@@ -214,7 +214,7 @@ jobs:
           ssh ubuntu@${{ secrets.WEB02_IP }} << 'ENDSSH'
             set -e
             echo "=== Deploying to Web02 ==="
-            cd ~/projects/research-finder
+            cd ~/research-finder
 
             # Pull latest code
             git pull origin main
