@@ -1,5 +1,7 @@
 # Research Finder
 
+## Demo: [https://youtu.be/7Hey8No7cPo]
+
 A full-stack academic paper search and organiser for students and researchers. Search 240M+ scholarly works, filter by author, year, type, and open-access status, save papers to a persistent library, and generate formatted citations in APA, MLA, Chicago, Harvard, or BibTeX.
 
 **Live URL:** https://youngjmatrix.tech
