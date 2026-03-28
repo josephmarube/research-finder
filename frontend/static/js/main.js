@@ -92,7 +92,10 @@ let currentQuery = {};
 let lastResults = [];
 
 $("searchBtn").addEventListener("click", () => runSearch(1));
-$("queryInput").addEventListener("keydown", (e) => { if (e.key === "Enter") runSearch(1); });
+// Enter key triggers search from any input field
+["queryInput", "authorInput", "yearInput"].forEach((id) => {
+  $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") runSearch(1); });
+});
 
 async function runSearch(page = 1) {
   const q       = $("queryInput").value.trim();
@@ -373,6 +376,12 @@ function openModal(doi) {
   loadPaperDetail(doi);
 }
 
+// Best available identifier for citation: real DOI preferred, OpenAlex ID as fallback
+function getCiteId(paper) {
+  if (!paper) return currentModalDoi;
+  return paper.doi || paper.id || currentModalDoi;
+}
+
 function closeModal() {
   hide($("modalOverlay"));
   document.body.style.overflow = "";
@@ -393,14 +402,14 @@ async function loadPaperDetail(doi) {
 
   if (cached) {
     renderModal(cached);
-    loadCitation(doi, currentCitFormat);
+    loadCitation(getCiteId(cached), currentCitFormat);
     return;
   }
 
   try {
     const data = await apiFetch(`/api/paper?doi=${encodeURIComponent(doi)}`);
     renderModal(data);
-    loadCitation(doi, currentCitFormat);
+    loadCitation(getCiteId(data), currentCitFormat);
   } catch (err) {
     $("modalBody").innerHTML = `<p style="color:var(--red);padding:32px 0">Error: ${escHtml(err.message)}</p>`;
     toast(`Could not load paper details: ${err.message}`);
@@ -439,17 +448,24 @@ document.querySelectorAll(".cite-btn").forEach((btn) => {
     document.querySelectorAll(".cite-btn").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
     currentCitFormat = btn.dataset.fmt;
-    if (currentModalDoi) loadCitation(currentModalDoi, currentCitFormat);
+    if (currentModalDoi) {
+      const paper = findPaper(currentModalDoi);
+      loadCitation(getCiteId(paper), currentCitFormat);
+    }
   });
 });
 
-async function loadCitation(doi, fmt) {
+async function loadCitation(citeId, fmt) {
+  if (!citeId) {
+    $("citationOutput").textContent = "No identifier available for this paper.";
+    return;
+  }
   $("citationOutput").textContent = "Generating…";
   try {
-    const data = await apiFetch(`/api/cite?doi=${encodeURIComponent(doi)}&format=${fmt}`);
+    const data = await apiFetch(`/api/cite?doi=${encodeURIComponent(citeId)}&format=${fmt}`);
     $("citationOutput").textContent = data.citation || "No citation data available";
   } catch (err) {
-    $("citationOutput").textContent = `Error: ${err.message}`;
+    $("citationOutput").textContent = `Could not generate citation: ${err.message}`;
   }
 }
 

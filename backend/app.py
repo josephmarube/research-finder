@@ -53,6 +53,9 @@ CACHE_TTL_AUTHOR   = int(os.environ.get("CACHE_TTL_AUTHOR",   86400))  # 24 hr
 OPENALEX_BASE  = "https://api.openalex.org"
 CROSSREF_BASE  = "https://api.crossref.org"
 
+# Semantic Scholar API (no key needed, generous rate limits)
+SEMANTIC_SCHOLAR_BASE = "https://api.semanticscholar.org/graph/v1"
+
 # Polite pool: identify ourselves to get better rate limits
 MAILTO = os.environ.get("CONTACT_EMAIL", "research-finder@example.com")
 
@@ -499,34 +502,110 @@ def author_lookup():
 @app.route("/api/cite")
 def generate_citation():
     """
-    GET /api/cite?doi=<doi>&format=apa|mla|chicago|bibtex|harvard
-    Generates a formatted citation string from cached or live paper data.
+    GET /api/cite?doi=<doi_or_openalex_id>&format=apa|mla|chicago|bibtex|harvard
+    Generates a formatted citation string.
+    Accepts real DOIs AND OpenAlex IDs (W1234567890).
+    Falls back through OpenAlex → CrossRef → Semantic Scholar.
     """
-    doi    = request.args.get("doi", "").strip().lstrip("https://doi.org/")
+    raw_id = request.args.get("doi", "").strip()
     fmt    = request.args.get("format", "apa").lower()
 
-    if not doi:
+    if not raw_id:
         return api_error("doi parameter is required", 400)
     if fmt not in ("apa", "mla", "chicago", "bibtex", "harvard"):
         return api_error("format must be: apa, mla, chicago, bibtex, or harvard", 400)
 
-    # Re-use cached paper data if available
-    paper = cache_get(f"paper:{doi}")
-    if not paper:
+    # Detect if this is an OpenAlex ID or a real DOI
+    is_openalex_id = (
+        "openalex.org" in raw_id or
+        "enalex.org"   in raw_id or
+        re.match(r"^W\d+$", raw_id)
+    )
+
+    # Clean up the identifier
+    if is_openalex_id:
+        # Extract just the W-number
+        openalex_id = re.search(r"W\d+", raw_id)
+        openalex_id = openalex_id.group(0) if openalex_id else raw_id
+        doi = None
+        cache_key = f"paper:openalex:{openalex_id}"
+    else:
+        doi = raw_id.replace("https://doi.org/", "").replace("http://doi.org/", "").strip()
+        openalex_id = None
+        cache_key = f"paper:{doi}"
+
+    # Try cache first
+    paper = cache_get(cache_key)
+    if paper:
+        citation = format_citation(paper, fmt)
+        return jsonify({"format": fmt, "citation": citation, "_cached": True})
+
+    paper = None
+
+    # ── Path 1: OpenAlex ID lookup ────────────────────────────────────────
+    if is_openalex_id:
+        try:
+            data  = fetch_json(f"{OPENALEX_BASE}/works/{openalex_id}", {"mailto": MAILTO})
+            paper = normalise_openalex(data)
+            # If the paper has a DOI, also try to enrich from Semantic Scholar
+            if not paper.get("abstract") and paper.get("doi"):
+                try:
+                    ss = fetch_json(
+                        f"{SEMANTIC_SCHOLAR_BASE}/paper/DOI:{paper['doi']}",
+                        {"fields": "abstract,year,authors,venue,externalIds"}
+                    )
+                    if ss.get("abstract") and not paper.get("abstract"):
+                        paper["abstract"] = ss["abstract"]
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning("OpenAlex ID lookup failed for %s: %s", openalex_id, e)
+
+    # ── Path 2: DOI lookup — OpenAlex first ──────────────────────────────
+    if not paper and doi:
         try:
             data  = fetch_json(f"{OPENALEX_BASE}/works/https://doi.org/{doi}", {"mailto": MAILTO})
             paper = normalise_openalex(data)
-            cache_set(f"paper:{doi}", paper, CACHE_TTL_PAPER)
-        except Exception:
-            try:
-                data  = fetch_json(f"{CROSSREF_BASE}/works/{doi}", {"mailto": MAILTO})
-                paper = normalise_crossref(data.get("message", {}))
-                cache_set(f"paper:{doi}", paper, CACHE_TTL_PAPER)
-            except Exception as e:
-                return api_error(f"Could not fetch paper metadata: {e}")
+        except Exception as e:
+            logger.warning("OpenAlex DOI lookup failed for %s: %s", doi, e)
 
+    # ── Path 3: CrossRef fallback ─────────────────────────────────────────
+    if not paper and doi:
+        try:
+            data  = fetch_json(f"{CROSSREF_BASE}/works/{doi}", {"mailto": MAILTO})
+            paper = normalise_crossref(data.get("message", {}))
+        except Exception as e:
+            logger.warning("CrossRef lookup failed for %s: %s", doi, e)
+
+    # ── Path 4: Semantic Scholar fallback ────────────────────────────────
+    if not paper:
+        try:
+            lookup = f"DOI:{doi}" if doi else f"OPENALEX:{openalex_id}"
+            ss = fetch_json(
+                f"{SEMANTIC_SCHOLAR_BASE}/paper/{lookup}",
+                {"fields": "title,authors,year,venue,externalIds,abstract,citationCount,isOpenAccess"}
+            )
+            if ss and ss.get("title"):
+                paper = {
+                    "title":    ss.get("title", "Untitled"),
+                    "authors":  [a.get("name", "") for a in ss.get("authors", [])],
+                    "year":     ss.get("year"),
+                    "venue":    ss.get("venue", ""),
+                    "doi":      ss.get("externalIds", {}).get("DOI", doi or ""),
+                    "abstract": ss.get("abstract", ""),
+                    "cited_by": ss.get("citationCount", 0),
+                    "is_oa":    ss.get("isOpenAccess", False),
+                    "source":   "semantic_scholar",
+                }
+        except Exception as e:
+            logger.warning("Semantic Scholar lookup failed: %s", e)
+
+    if not paper:
+        return api_error("Could not find metadata for this paper from any source", 404)
+
+    cache_set(cache_key, paper, CACHE_TTL_PAPER)
     citation = format_citation(paper, fmt)
-    return jsonify({"doi": doi, "format": fmt, "citation": citation})
+    return jsonify({"format": fmt, "citation": citation, "_cached": False})
 
 
 def format_citation(p: dict, fmt: str) -> str:
